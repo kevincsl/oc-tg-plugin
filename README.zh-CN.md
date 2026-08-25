@@ -55,12 +55,18 @@
 
 直接私信机器人。消息会送进当前使用的 opencode session，回复则传回 Telegram。opencode 工作中时，后续消息会进入队列。
 
-| 命令      | 效果                      |
-| --------- | ------------------------- |
-| `/start`  | 配对账号 / 显示帮助       |
-| `/help`   | 显示帮助                  |
-| `/status` | 机器人、session、队列状态 |
-| `stop`    | 中止当前回合              |
+| 命令        | 效果                                              |
+| ----------- | ------------------------------------------------- |
+| `/start`    | 配对账号 / 显示帮助                               |
+| `/help`     | 显示帮助                                          |
+| `/new`      | 开新 session 并切换过去                           |
+| `/sessions` | 列出最近的 sessions                               |
+| `/switch <n\|id>` | 切换目标 session（用 `/sessions` 的编号）   |
+| `/model`    | 显示模型覆盖（`/model <provider/id>` 设置，`clear` 重置） |
+| `/compact`  | 摘要压缩当前 session                              |
+| `/share`    | 分享 session 并取得链接                           |
+| `/status`   | 机器人、session、队列状态                         |
+| `stop`      | 中止当前回合                                      |
 
 ## 注意事项与边界
 

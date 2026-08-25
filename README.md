@@ -63,12 +63,18 @@ prompts in from your phone, streamed replies back out, files both ways.
 DM your bot. Messages land in the active opencode session; replies come back
 to Telegram. While opencode is working, further messages are queued.
 
-| Command  | Effect                              |
-| -------- | ----------------------------------- |
-| `/start` | Pair account / show help            |
-| `/help`  | Show help                           |
-| `/status`| Bot, session, queue status          |
-| `stop`   | Abort the current turn              |
+| Command   | Effect                                                       |
+| --------- | ------------------------------------------------------------ |
+| `/start`  | Pair account / show help                                     |
+| `/help`   | Show help                                                    |
+| `/new`    | Start a new session and target it                            |
+| `/sessions` | List recent sessions                                       |
+| `/switch <n\|id>` | Switch the target session (number from `/sessions`)  |
+| `/model`  | Show model override (`/model <provider/id>` set, `clear` reset) |
+| `/compact`| Summarize/compact the session                                |
+| `/share`  | Share the session and get a URL                              |
+| `/status` | Bot, session, queue status                                   |
+| `stop`    | Abort the current turn                                       |
 
 ## Notes & boundaries
 

@@ -280,6 +280,9 @@ export const TelegramPlugin: Plugin = async ({ client }) => {
   // Session we forward Telegram prompts into: whatever session in this
   // instance showed activity most recently.
   let sessionId: string | undefined
+  // Telegram-side overrides for TUI-native controls.
+  let modelOverride: string | undefined
+  let listedSessions: Array<{ id: string; title: string }> = []
   let busyFromTelegram = false
   let typingInterval: ReturnType<typeof setInterval> | undefined
   let previewState: PreviewState | undefined
@@ -557,8 +560,15 @@ export const TelegramPlugin: Plugin = async ({ client }) => {
     for (const image of turn.images) {
       parts.push({ type: "file", mime: image.mimeType, filename: image.fileName, url: `data:${image.mimeType};base64,${image.data}` })
     }
+    const body: Record<string, unknown> = { parts }
+    if (modelOverride) {
+      const slash = modelOverride.indexOf("/")
+      if (slash > 0) {
+        body.model = { providerID: modelOverride.slice(0, slash), modelID: modelOverride.slice(slash + 1) }
+      }
+    }
     try {
-      const result = await client.session.promptAsync({ path: { id: sessionId }, body: { parts } as never })
+      const result = await client.session.promptAsync({ path: { id: sessionId }, body: body as never })
       if (result.error) throw new Error(String(result.error))
     } catch (error) {
       busyFromTelegram = false
@@ -611,11 +621,124 @@ export const TelegramPlugin: Plugin = async ({ client }) => {
     const lower = rawText.toLowerCase()
 
     if (lower === "/help" || lower === "/start") {
-      await sendTextReply(firstMessage.chat.id, `Send me a message and I will forward it to the active opencode session. Commands: /status, /statuslong, stop.`)
+      await sendTextReply(
+        firstMessage.chat.id,
+        `Send me a message and I will forward it to the active opencode session.
+Commands:
+/new - start a new session
+/sessions - list recent sessions
+/switch <n|id> - switch target session
+/model - show model (/model <provider/id> to set, /model clear to reset)
+/compact - summarize the session
+/share - share session and get URL
+/status - bridge status
+stop - abort the current turn`,
+      )
       if (config.allowedUserId === undefined && firstMessage.from) {
         config.allowedUserId = firstMessage.from.id
         await writeConfig(config)
         await sendTextReply(firstMessage.chat.id, "Telegram bridge paired with this account.")
+      }
+      return
+    }
+
+    if (lower === "/new") {
+      try {
+        const created = await client.session.create({})
+        sessionId = (created.data as unknown as { id: string }).id
+        modelOverride = undefined
+        await sendTextReply(firstMessage.chat.id, `New session started: ${sessionId}`)
+      } catch (error) {
+        await sendTextReply(firstMessage.chat.id, `Failed to create session: ${error instanceof Error ? error.message : error}`)
+      }
+      return
+    }
+
+    if (lower === "/sessions") {
+      try {
+        const res = await client.session.list()
+        const all = (res.data as unknown as Array<{ id: string; title?: string; time?: { updated?: number } }>) ?? []
+        listedSessions = all.slice(0, 10).map((s) => ({ id: s.id, title: s.title || "(untitled)" }))
+        const lines = listedSessions.map((s, i) => {
+          const marker = s.id === sessionId ? " ←" : ""
+          return `${i + 1}. ${s.title}${marker}`
+        })
+        await sendTextReply(firstMessage.chat.id, `Recent sessions:\n${lines.join("\n")}\n\nSwitch with /switch <number>`)
+      } catch (error) {
+        await sendTextReply(firstMessage.chat.id, `Failed to list sessions: ${error instanceof Error ? error.message : error}`)
+      }
+      return
+    }
+
+    if (lower.startsWith("/switch")) {
+      const arg = rawText.slice("/switch".length).trim()
+      let target: string | undefined
+      if (/^\d+$/.test(arg)) {
+        const idx = Number(arg) - 1
+        target = listedSessions[idx]?.id
+      } else if (arg) {
+        target = listedSessions.find((s) => s.id.startsWith(arg))?.id ?? (listedSessions.some((s) => s.id === arg) ? arg : undefined)
+      }
+      if (!target) {
+        await sendTextReply(firstMessage.chat.id, `Usage: /switch <number from /sessions> or <session id prefix>`)
+        return
+      }
+      sessionId = target
+      const title = listedSessions.find((s) => s.id === target)?.title ?? ""
+      await sendTextReply(firstMessage.chat.id, `Switched to: ${title} (${target})`)
+      return
+    }
+
+    if (lower.startsWith("/model")) {
+      const arg = rawText.slice("/model".length).trim()
+      if (!arg) {
+        await sendTextReply(
+          firstMessage.chat.id,
+          modelOverride
+            ? `Telegram model override: ${modelOverride}\nSet with /model <provider/id>, clear with /model clear`
+            : `No Telegram model override (using the session's model).\nSet with /model <provider/id>, clear with /model clear`,
+        )
+        return
+      }
+      if (arg.toLowerCase() === "clear") {
+        modelOverride = undefined
+        await sendTextReply(firstMessage.chat.id, "Model override cleared.")
+        return
+      }
+      if (!arg.includes("/") || arg.startsWith("/") || arg.endsWith("/")) {
+        await sendTextReply(firstMessage.chat.id, `Invalid model. Use <provider>/<model-id>, e.g. /model anthropic/claude-sonnet-4-6`)
+        return
+      }
+      modelOverride = arg
+      await sendTextReply(firstMessage.chat.id, `Telegram model override set to ${arg}`)
+      return
+    }
+
+    if (lower === "/compact") {
+      if (busyFromTelegram || !sessionId) {
+        await sendTextReply(firstMessage.chat.id, "Cannot compact now. Send stop first / no active session.")
+        return
+      }
+      try {
+        await client.session.summarize({ path: { id: sessionId } })
+        await sendTextReply(firstMessage.chat.id, "Compaction started.")
+      } catch (error) {
+        await sendTextReply(firstMessage.chat.id, `Compaction failed: ${error instanceof Error ? error.message : error}`)
+      }
+      return
+    }
+
+    if (lower === "/share") {
+      if (!sessionId) {
+        await sendTextReply(firstMessage.chat.id, "No active session.")
+        return
+      }
+      try {
+        const res = await client.session.share({ path: { id: sessionId } })
+        const share = (res.data as unknown as { share?: { url?: string }; shareUrl?: string }).share?.url
+        await sendTextReply(firstMessage.chat.id, share ? `Shared: ${share}` : "Session shared (no URL returned).")
+      } catch (error) {
+        await sendTextReply(firstMessage.chat.id, `Share failed: ${error instanceof Error ? error.message : error}`)
       }
       return
     }

@@ -55,12 +55,18 @@
 
 直接私訊機器人。訊息會送進目前使用的 opencode session，回覆則傳回 Telegram。opencode 工作中時，後續訊息會排入佇列。
 
-| 指令      | 效果                     |
-| --------- | ------------------------ |
-| `/start`  | 配對帳號 / 顯示說明      |
-| `/help`   | 顯示說明                 |
-| `/status` | 機器人、session、佇列狀態 |
-| `stop`    | 中止目前回合             |
+| 指令        | 效果                                              |
+| ----------- | ------------------------------------------------- |
+| `/start`    | 配對帳號 / 顯示說明                               |
+| `/help`     | 顯示說明                                          |
+| `/new`      | 開新 session 並切換過去                           |
+| `/sessions` | 列出最近的 sessions                               |
+| `/switch <n\|id>` | 切換目標 session（用 `/sessions` 的編號）   |
+| `/model`    | 顯示模型覆寫（`/model <provider/id>` 設定，`clear` 重設） |
+| `/compact`  | 摘要壓縮目前 session                              |
+| `/share`    | 分享 session 並取得連結                           |
+| `/status`   | 機器人、session、佇列狀態                         |
+| `stop`      | 中止目前回合                                      |
 
 ## 注意事項與邊界
 
