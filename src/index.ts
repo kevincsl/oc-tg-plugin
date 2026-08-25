@@ -105,6 +105,14 @@ interface TelegramUpdate {
   update_id: number
   message?: TelegramMessage
   edited_message?: TelegramMessage
+  callback_query?: TelegramCallbackQuery
+}
+
+interface TelegramCallbackQuery {
+  id: string
+  from: TelegramUser
+  data?: string
+  message?: TelegramMessage
 }
 
 interface TelegramGetFileResult {
@@ -410,10 +418,18 @@ export const TelegramPlugin: Plugin = async ({ client }) => {
     previewState = undefined
   }
 
-  async function sendTextReply(chatId: number, text: string): Promise<void> {
-    for (const chunk of chunkParagraphs(text)) {
+  interface InlineButton {
+    text: string
+    callback_data: string
+  }
+
+  async function sendTextReply(chatId: number, text: string, buttons?: InlineButton[][]): Promise<void> {
+    const chunks = chunkParagraphs(text)
+    for (let i = 0; i < chunks.length; i++) {
+      const body: Record<string, unknown> = { chat_id: chatId, text: chunks[i] }
+      if (buttons && i === chunks.length - 1) body.reply_markup = { inline_keyboard: buttons }
       try {
-        await callTelegram<TelegramSentMessage>("sendMessage", { chat_id: chatId, text: chunk })
+        await callTelegram<TelegramSentMessage>("sendMessage", body)
       } catch (error) {
         log("failed to send Telegram reply", error)
       }
@@ -657,13 +673,16 @@ stop - abort the current turn`,
     if (lower === "/sessions") {
       try {
         const res = await client.session.list()
-        const all = (res.data as unknown as Array<{ id: string; title?: string; time?: { updated?: number } }>) ?? []
+        const all = (res.data as unknown as Array<{ id: string; title?: string }>) ?? []
         listedSessions = all.slice(0, 10).map((s) => ({ id: s.id, title: s.title || "(untitled)" }))
         const lines = listedSessions.map((s, i) => {
           const marker = s.id === sessionId ? " ←" : ""
           return `${i + 1}. ${s.title}${marker}`
         })
-        await sendTextReply(firstMessage.chat.id, `Recent sessions:\n${lines.join("\n")}\n\nSwitch with /switch <number>`)
+        const buttons: InlineButton[][] = listedSessions.map((s, i) => [
+          { text: `${i + 1}. ${s.title}`.slice(0, 60), callback_data: `switch:${s.id}` },
+        ])
+        await sendTextReply(firstMessage.chat.id, `Recent sessions — tap to switch:\n${lines.join("\n")}`, buttons)
       } catch (error) {
         await sendTextReply(firstMessage.chat.id, `Failed to list sessions: ${error instanceof Error ? error.message : error}`)
       }
@@ -689,28 +708,44 @@ stop - abort the current turn`,
       return
     }
 
-    if (lower.startsWith("/model")) {
+    if (lower === "/model" || lower.startsWith("/model ")) {
       const arg = rawText.slice("/model".length).trim()
-      if (!arg) {
-        await sendTextReply(
-          firstMessage.chat.id,
-          modelOverride
-            ? `Telegram model override: ${modelOverride}\nSet with /model <provider/id>, clear with /model clear`
-            : `No Telegram model override (using the session's model).\nSet with /model <provider/id>, clear with /model clear`,
-        )
-        return
-      }
       if (arg.toLowerCase() === "clear") {
         modelOverride = undefined
         await sendTextReply(firstMessage.chat.id, "Model override cleared.")
         return
       }
-      if (!arg.includes("/") || arg.startsWith("/") || arg.endsWith("/")) {
-        await sendTextReply(firstMessage.chat.id, `Invalid model. Use <provider>/<model-id>, e.g. /model anthropic/claude-sonnet-4-6`)
+      if (arg) {
+        if (!arg.includes("/") || arg.startsWith("/") || arg.endsWith("/")) {
+          await sendTextReply(firstMessage.chat.id, `Invalid model. Use <provider>/<model-id> or just /model for buttons`)
+          return
+        }
+        modelOverride = arg
+        await sendTextReply(firstMessage.chat.id, `Telegram model override set to ${arg}`)
         return
       }
-      modelOverride = arg
-      await sendTextReply(firstMessage.chat.id, `Telegram model override set to ${arg}`)
+      try {
+        const res = await client.config.providers()
+        const providers = (res.data as unknown as { providers?: Array<{ id: string; models?: Record<string, unknown> }> }).providers ?? []
+        const buttons: InlineButton[][] = []
+        const lines: string[] = []
+        for (const provider of providers) {
+          const modelIds = Object.keys(provider.models ?? {})
+          if (modelIds.length === 0) continue
+          for (const modelId of modelIds) {
+            if (buttons.length >= 30) break
+            const full = `${provider.id}/${modelId}`
+            lines.push(`${full}${full === modelOverride ? " ←" : ""}`)
+            buttons.push([{ text: full.slice(0, 60), callback_data: `model:${full}`.slice(0, 64) }])
+          }
+          if (buttons.length >= 30) break
+        }
+        const header = modelOverride ? `Current override: ${modelOverride}\n\nTap a model:` : `No override (session default). Tap a model:`
+        const suffix = buttons.length >= 30 ? "\n\n(list capped at 30 — use /model <provider/id> for others)" : ""
+        await sendTextReply(firstMessage.chat.id, header + suffix, buttons)
+      } catch (error) {
+        await sendTextReply(firstMessage.chat.id, `Failed to list models: ${error instanceof Error ? error.message : error}`)
+      }
       return
     }
 
@@ -799,6 +834,35 @@ stop - abort the current turn`,
   }
 
   async function handleUpdate(update: TelegramUpdate): Promise<void> {
+    if (update.callback_query) {
+      const cq = update.callback_query
+      if (!cq.from || cq.from.is_bot) return
+      if (config.allowedUserId !== undefined && cq.from.id !== config.allowedUserId) {
+        await callTelegram("answerCallbackQuery", { callback_query_id: cq.id, text: "Not authorized" }).catch(() => undefined)
+        return
+      }
+      await callTelegram("answerCallbackQuery", { callback_query_id: cq.id }).catch(() => undefined)
+      const data = cq.data ?? ""
+      if (data.startsWith("model:")) {
+        const model = data.slice("model:".length)
+        modelOverride = model
+        if (cq.message?.chat.id) {
+          await sendTextReply(cq.message.chat.id, `Model override set to ${model}`)
+        }
+        return
+      }
+      if (data.startsWith("switch:")) {
+        const target = data.slice("switch:".length)
+        sessionId = target
+        const title = listedSessions.find((s) => s.id === target)?.title ?? ""
+        if (cq.message?.chat.id) {
+          await sendTextReply(cq.message.chat.id, `Switched to: ${title} (${target})`)
+        }
+        return
+      }
+      return
+    }
+
     const message = update.message || update.edited_message
     if (!message || message.chat.type !== "private" || !message.from || message.from.is_bot) return
 
@@ -845,7 +909,7 @@ stop - abort the current turn`,
             offset: config.lastUpdateId !== undefined ? config.lastUpdateId + 1 : undefined,
             limit: 10,
             timeout: 30,
-            allowed_updates: ["message", "edited_message"],
+            allowed_updates: ["message", "edited_message", "callback_query"],
           },
           { signal },
         )
