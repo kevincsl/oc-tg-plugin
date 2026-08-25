@@ -1,0 +1,42 @@
+{
+  "name": "oc-tg-plugin",
+  "version": "0.1.0",
+  "description": "Telegram DM bridge plugin for opencode - control your opencode sessions from your phone",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "telegram",
+    "bot",
+    "bridge"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kevincsl/oc-tg-plugin.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kevincsl/oc-tg-plugin/issues"
+  },
+  "homepage": "https://github.com/kevincsl/oc-tg-plugin#readme",
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.17.11"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
