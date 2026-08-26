@@ -291,6 +291,8 @@ export const TelegramPlugin: Plugin = async ({ client }) => {
   // Telegram-side overrides for TUI-native controls.
   let modelOverride: string | undefined
   let listedSessions: Array<{ id: string; title: string }> = []
+  let modelList: string[] = []
+  let modelPage = 0
   let busyFromTelegram = false
   let typingInterval: ReturnType<typeof setInterval> | undefined
   let previewState: PreviewState | undefined
@@ -421,6 +423,39 @@ export const TelegramPlugin: Plugin = async ({ client }) => {
   interface InlineButton {
     text: string
     callback_data: string
+  }
+
+  const MODELS_PER_PAGE = 20
+
+  function buildModelPageButtons(page: number): { text: string; buttons: InlineButton[][] } {
+    const totalPages = Math.max(1, Math.ceil(modelList.length / MODELS_PER_PAGE))
+    const current = Math.min(Math.max(page, 0), totalPages - 1)
+    const slice = modelList.slice(current * MODELS_PER_PAGE, (current + 1) * MODELS_PER_PAGE)
+    const buttons: InlineButton[][] = slice.map((full) => [
+      { text: `${full === modelOverride ? "✓ " : ""}${full}`.slice(0, 60), callback_data: `model:${full}`.slice(0, 64) },
+    ])
+    if (totalPages > 1) {
+      buttons.push([
+        { text: "◀ Prev", callback_data: `modelpage:${current - 1}` },
+        { text: `${current + 1}/${totalPages}`, callback_data: "modelpage:noop" },
+        { text: "Next ▶", callback_data: `modelpage:${current + 1}` },
+      ])
+    }
+    const header = `Models (custom providers first) — page ${current + 1}/${totalPages}\nOverride: ${modelOverride ?? "none (session default)"}`
+    return { text: header, buttons }
+  }
+
+  async function sendModelPage(chatId: number, editMessageId?: number): Promise<void> {
+    const { text, buttons } = buildModelPageButtons(modelPage)
+    try {
+      if (editMessageId) {
+        await callTelegram("editMessageText", { chat_id: chatId, message_id: editMessageId, text, reply_markup: { inline_keyboard: buttons } })
+      } else {
+        await callTelegram<TelegramSentMessage>("sendMessage", { chat_id: chatId, text, reply_markup: { inline_keyboard: buttons } })
+      }
+    } catch (error) {
+      log("failed to send model page", error)
+    }
   }
 
   async function sendTextReply(chatId: number, text: string, buttons?: InlineButton[][]): Promise<void> {
@@ -726,23 +761,23 @@ stop - abort the current turn`,
       }
       try {
         const res = await client.config.providers()
-        const providers = (res.data as unknown as { providers?: Array<{ id: string; models?: Record<string, unknown> }> }).providers ?? []
-        const buttons: InlineButton[][] = []
-        const lines: string[] = []
+        const providers = (res.data as unknown as {
+          providers?: Array<{ id: string; source?: string; models?: Record<string, unknown> }>
+        }).providers ?? []
+        const configured: string[] = []
+        const builtin: string[] = []
         for (const provider of providers) {
-          const modelIds = Object.keys(provider.models ?? {})
-          if (modelIds.length === 0) continue
-          for (const modelId of modelIds) {
-            if (buttons.length >= 30) break
+          const isCustom = provider.source === "config" || provider.source === "custom" || provider.source === "env"
+          for (const modelId of Object.keys(provider.models ?? {})) {
             const full = `${provider.id}/${modelId}`
-            lines.push(`${full}${full === modelOverride ? " ←" : ""}`)
-            buttons.push([{ text: full.slice(0, 60), callback_data: `model:${full}`.slice(0, 64) }])
+            ;(isCustom ? configured : builtin).push(full)
           }
-          if (buttons.length >= 30) break
         }
-        const header = modelOverride ? `Current override: ${modelOverride}\n\nTap a model:` : `No override (session default). Tap a model:`
-        const suffix = buttons.length >= 30 ? "\n\n(list capped at 30 — use /model <provider/id> for others)" : ""
-        await sendTextReply(firstMessage.chat.id, header + suffix, buttons)
+        configured.sort()
+        builtin.sort()
+        modelList = [...configured, ...builtin]
+        modelPage = 0
+        await sendModelPage(firstMessage.chat.id)
       } catch (error) {
         await sendTextReply(firstMessage.chat.id, `Failed to list models: ${error instanceof Error ? error.message : error}`)
       }
@@ -843,11 +878,28 @@ stop - abort the current turn`,
       }
       await callTelegram("answerCallbackQuery", { callback_query_id: cq.id }).catch(() => undefined)
       const data = cq.data ?? ""
+      if (data.startsWith("modelpage:")) {
+        const arg = data.slice("modelpage:".length)
+        if (arg !== "noop" && cq.message?.chat.id && cq.message.message_id) {
+          const next = Number(arg)
+          if (!Number.isNaN(next)) {
+            modelPage = next
+            await sendModelPage(cq.message.chat.id, cq.message.message_id)
+          }
+        }
+        return
+      }
       if (data.startsWith("model:")) {
         const model = data.slice("model:".length)
         modelOverride = model
-        if (cq.message?.chat.id) {
-          await sendTextReply(cq.message.chat.id, `Model override set to ${model}`)
+        if (cq.message?.chat.id && cq.message.message_id) {
+          const { text, buttons } = buildModelPageButtons(modelPage)
+          await callTelegram("editMessageText", {
+            chat_id: cq.message.chat.id,
+            message_id: cq.message.message_id,
+            text: `✓ Model override set to ${model}\n\n${text}`,
+            reply_markup: { inline_keyboard: buttons },
+          }).catch(() => undefined)
         }
         return
       }
